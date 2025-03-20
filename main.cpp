@@ -1,7 +1,9 @@
 #include <QApplication>
 #include <QCamera>
 #include <QDebug>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QMainWindow>
 #include <QMediaCaptureSession>
 #include <QPixmap>
 #include <QSerialPort>
@@ -9,6 +11,7 @@
 #include <QVBoxLayout>
 #include <QVideoSink>
 #include <QWidget>
+#include <QWindow>
 #include <cstdint>
 
 constexpr size_t write_wait_msec = 400;
@@ -56,12 +59,11 @@ struct Pkt {
   }
 
   void set_key_down() {
-    head[0] = 0x57;
-    head[1] = 0xab;
     addr = 0;
     cmd = CMD_KEYBOARD;
     len = 8;
   }
+  void set_key(uint8_t code) { this->code = code; }
 
   void calc_sum() {
     size_t sz = sizeof(*this) - 1;
@@ -72,10 +74,49 @@ struct Pkt {
     }
   }
 
+  void make_key_down(uint8_t code) {
+    memset(this, 0, sizeof(*this));
+    set_header();
+    set_key(code);
+    set_key_down();
+    calc_sum();
+  }
+  void make_key_up() { make_key_down(0); }
+
 } __attribute__((packed));
+class MyWindow : public QWindow {
+public:
+  MyWindow() {
+    setTitle("Key Event Handling in QWindow without Q_OBJECT");
+    resize(400, 300);
+    show(); // Make sure the window is visible
+  }
+
+protected:
+  void keyPressEvent(QKeyEvent *event) override {
+    int key = event->key();
+    int scanCode = event->nativeScanCode();
+
+    Qt::KeyboardModifiers modifiers = event->modifiers();
+
+    bool ctrl = modifiers.testFlag(Qt::ControlModifier);
+    bool shift = modifiers.testFlag(Qt::ShiftModifier);
+    bool alt = modifiers.testFlag(Qt::AltModifier);
+    bool win = modifiers.testFlag(Qt::MetaModifier);
+    qDebug() << "Key:" << key << "Scan Code:" << scanCode << "ctrl:" << ctrl
+             << "shift:" << shift << "alt:" << alt << "win:" << win;
+
+    QWindow::keyPressEvent(event);
+  }
+};
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
+
+  // QGuiApplication app(argc, argv);
+  MyWindow window;
+  return app.exec();
+  // return 0;
 
   const auto ports = QSerialPortInfo::availablePorts();
   qDebug() << "Available serial ports:";
@@ -116,11 +157,17 @@ int main(int argc, char *argv[]) {
   }
 
   Pkt pkt;
-  memset(&pkt, 0, sizeof(pkt));
-  pkt.set_key_in();
-  pkt.modifier = 0;
-  pkt.code = 0x15;
-  pkt.calc_sum();
+  pkt.make_key_down(0x14);
+
+  serial.write((const char *)&pkt, sizeof(pkt));
+  if (serial.waitForBytesWritten(write_wait_msec)) {
+    qDebug() << "Data written successfully.";
+  } else {
+    qDebug() << "Error writing data:" << serial.errorString();
+  }
+
+  pkt.make_key_down(0x0);
+
   serial.write((const char *)&pkt, sizeof(pkt));
   if (serial.waitForBytesWritten(write_wait_msec)) {
     qDebug() << "Data written successfully.";
@@ -128,47 +175,5 @@ int main(int argc, char *argv[]) {
     qDebug() << "Error writing data:" << serial.errorString();
   }
   serial.close();
-
   return 0;
-
-  // Create a widget to serve as the main window
-  QWidget window;
-  window.setWindowTitle("Qt6 Webcam View");
-  QVBoxLayout layout(&window);
-
-  // QLabel to display video frames
-  QLabel videoLabel;
-  videoLabel.setMinimumSize(640, 480);
-  layout.addWidget(&videoLabel);
-
-  // Create a QCamera object for the default camera
-  QCamera camera;
-
-  // Create a media capture session and set the camera
-  QMediaCaptureSession captureSession;
-  captureSession.setCamera(&camera);
-
-  // Create a QVideoSink to receive video frames
-  QVideoSink videoSink;
-  captureSession.setVideoSink(&videoSink);
-
-  // Connect to the videoFrameChanged signal to update the video label
-  QObject::connect(&videoSink, &QVideoSink::videoFrameChanged,
-                   [&](const QVideoFrame &frame) {
-                     if (frame.isValid()) {
-                       // Convert the video frame to a QImage. Note: this
-                       // conversion may require adjustments depending on your
-                       // platform and frame format.
-                       QImage image = frame.toImage();
-                       if (!image.isNull()) {
-                         videoLabel.setPixmap(QPixmap::fromImage(image));
-                       }
-                     }
-                   });
-
-  // Start the camera
-  camera.start();
-
-  window.show();
-  return app.exec();
 }
