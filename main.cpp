@@ -50,6 +50,11 @@ struct PktHeader {
     cmd = CMD_MOUSE_ABS;
     len = 7;
   }
+  void set_mouse_rel() {
+    addr = 0;
+    cmd = CMD_MOUSE_REL;
+    len = 5;
+  }
 
 } __attribute__((packed));
 
@@ -136,6 +141,76 @@ struct PktMouse {
     uint16_t y_int = 4096 * y_f;
     x = x_int;
     y = y_int;
+
+    calc_sum();
+  }
+
+  void make_click(float x_f, float y_f, bool left, bool right, bool middle) {
+    memset(this, 0, sizeof(*this));
+    head.set_header();
+    head.set_mouse();
+
+    if (left) {
+      button |= 0b1;
+    }
+    if (right) {
+      button |= 0b10;
+    }
+
+    if (middle) {
+      button |= 0b100;
+    }
+
+    fixed_2 = 0x2;
+
+    uint16_t x_int = 4096 * x_f;
+    uint16_t y_int = 4096 * y_f;
+    x = x_int;
+    y = y_int;
+
+    calc_sum();
+  }
+
+} __attribute__((packed));
+
+struct PktMouseClick {
+  PktHeader head;
+  uint8_t fixed_1;
+  uint8_t button;
+  uint8_t x;
+  uint8_t y;
+  uint8_t scroll;
+  uint8_t sum;
+
+  void calc_sum() {
+    size_t sz = sizeof(*this) - 1;
+    uint8_t *ptr = (uint8_t *)this;
+    sum = 0;
+    for (size_t i = 0; i < sz; ++i) {
+      sum += ptr[i];
+    }
+  }
+
+  void make_click(bool left, bool right, bool middle) {
+    memset(this, 0, sizeof(*this));
+    head.set_header();
+    head.set_mouse_rel();
+
+    if (left) {
+      button |= 0b1;
+    }
+    if (right) {
+      button |= 0b10;
+    }
+
+    if (middle) {
+      button |= 0b100;
+    }
+
+    fixed_1 = 0x1;
+
+    x = 0;
+    y = 0;
 
     calc_sum();
   }
@@ -282,10 +357,23 @@ protected:
     }
 
     // QPointF localPos = event->position();
-    // auto button = event->button();
+    auto buttons = event->buttons();
+
+    bool left = buttons & Qt::LeftButton;
+    bool right = buttons & Qt::RightButton;
+    bool middle = buttons & Qt::MiddleButton;
+
+    qDebug() << "left: " << left << " right: " << right
+             << " middle: " << middle;
 
     pkt_mouse.make_move(x, y);
     write_pkt_mouse();
+    pkt_mouse_click.make_click(left, right, middle);
+    write_pkt_mouse_click();
+    pkt_mouse_click.make_click(false, false, false);
+    write_pkt_mouse_click();
+    // pkt_mouse.make_move(x, y);
+    // write_pkt_mouse();
 
     // qDebug() << "button: " << event->button() << " pos: " << localPos;
 
@@ -302,6 +390,7 @@ private:
   QSerialPort serial;
   PktKbd pkt_kbd;
   PktMouse pkt_mouse;
+  PktMouseClick pkt_mouse_click;
 
   void write_pkt_kbd() {
     serial.write((const char *)&pkt_kbd, sizeof(pkt_kbd));
@@ -314,6 +403,15 @@ private:
 
   void write_pkt_mouse() {
     serial.write((const char *)&pkt_mouse, sizeof(pkt_mouse));
+    if (serial.waitForBytesWritten(write_wait_msec)) {
+      qDebug() << "Data written successfully.";
+    } else {
+      qDebug() << "Error writing data:" << serial.errorString();
+    }
+  }
+
+  void write_pkt_mouse_click() {
+    serial.write((const char *)&pkt_mouse_click, sizeof(pkt_mouse_click));
     if (serial.waitForBytesWritten(write_wait_msec)) {
       qDebug() << "Data written successfully.";
     } else {
