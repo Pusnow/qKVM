@@ -12,7 +12,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia SerialPort)
 qt_standard_project_setup()
 
-qt_add_executable(qKVM main.cpp)
+qt_add_executable(qKVM main.cpp macos.cpp)
 
 target_link_libraries(qKVM PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::SerialPort)
 

@@ -4,6 +4,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMap>
 #include <QMediaCaptureSession>
 #include <QPixmap>
 #include <QSerialPort>
@@ -13,6 +14,9 @@
 #include <QWidget>
 #include <QWindow>
 #include <cstdint>
+#include <exception>
+
+#include "ch9329.h"
 
 constexpr size_t write_wait_msec = 400;
 
@@ -74,49 +78,143 @@ struct Pkt {
     }
   }
 
-  void make_key_down(uint8_t code) {
+  void make_key_down(uint8_t code, bool lctrl, bool lshift, bool lalt,
+                     bool lwin, bool rctl, bool rshift, bool ralt, bool rwin) {
     memset(this, 0, sizeof(*this));
     set_header();
     set_key(code);
+    set_modifier(lctrl, lshift, lalt, lwin, rctl, rshift, ralt, rwin);
     set_key_down();
     calc_sum();
   }
-  void make_key_up() { make_key_down(0); }
+  void make_key_up() {
+    make_key_down(0, false, false, false, false, false, false, false, false);
+  }
 
 } __attribute__((packed));
-class MyWindow : public QWindow {
+
+uint8_t key_to_scancode(uint32_t key);
+void key_to_scancode_init();
+
+class MainWindow : public QWindow {
 public:
-  MyWindow() {
-    setTitle("Key Event Handling in QWindow without Q_OBJECT");
+  MainWindow(QString port_name) {
+
+    serial.setPortName(port_name);
+    serial.setBaudRate(QSerialPort::Baud9600);
+    serial.setDataBits(QSerialPort::Data8);
+    serial.setParity(QSerialPort::NoParity);
+    serial.setStopBits(QSerialPort::OneStop);
+    serial.setFlowControl(QSerialPort::NoFlowControl);
+    if (!serial.open(QIODevice::ReadWrite)) {
+      qDebug() << "Failed to open port:" << serial.errorString();
+      throw std::exception();
+    }
+    setTitle("qKVM");
     resize(400, 300);
-    show(); // Make sure the window is visible
+    show();
   }
+
+  virtual ~MainWindow() { serial.close(); }
 
 protected:
   void keyPressEvent(QKeyEvent *event) override {
-    int key = event->key();
-    int scanCode = event->nativeScanCode();
 
-    Qt::KeyboardModifiers modifiers = event->modifiers();
-
-    bool ctrl = modifiers.testFlag(Qt::ControlModifier);
-    bool shift = modifiers.testFlag(Qt::ShiftModifier);
-    bool alt = modifiers.testFlag(Qt::AltModifier);
-    bool win = modifiers.testFlag(Qt::MetaModifier);
-    qDebug() << "Key:" << key << "Scan Code:" << scanCode << "ctrl:" << ctrl
-             << "shift:" << shift << "alt:" << alt << "win:" << win;
+    uint32_t virtkey = event->nativeVirtualKey();
+    uint8_t code = key_to_scancode(virtkey);
+    if (code) {
+      pkt.make_key_down(code, ctrl_left, shift_left, alt_left, win_left,
+                        ctrl_right, shift_right, alt_right, win_right);
+      write_pkt();
+      pkt.make_key_up();
+      write_pkt();
+    }
+    switch (code) {
+    case CH9_Control:
+      ctrl_left = true;
+      break;
+    case CH9_Shift:
+      shift_left = true;
+      break;
+    case CH9_Alt:
+      alt_left = true;
+      break;
+    case CH9_Win:
+      win_left = true;
+      break;
+    case CH9_RightControl:
+      ctrl_right = true;
+      break;
+    case CH9_RightShift:
+      shift_right = true;
+      break;
+    case CH9_RightAlt:
+      alt_right = true;
+      break;
+    case CH9_RightWin:
+      win_right = true;
+      break;
+    }
 
     QWindow::keyPressEvent(event);
   }
+
+  void keyReleaseEvent(QKeyEvent *event) override {
+    uint32_t virtkey = event->nativeVirtualKey();
+    uint8_t code = key_to_scancode(virtkey);
+    switch (code) {
+    case CH9_Control:
+      ctrl_left = false;
+      break;
+    case CH9_Shift:
+      shift_left = false;
+      break;
+    case CH9_Alt:
+      alt_left = false;
+      break;
+    case CH9_Win:
+      win_left = false;
+      break;
+    case CH9_RightControl:
+      ctrl_right = false;
+      break;
+    case CH9_RightShift:
+      shift_right = false;
+      break;
+    case CH9_RightAlt:
+      alt_right = false;
+      break;
+    case CH9_RightWin:
+      win_right = false;
+      break;
+    }
+    QWindow::keyReleaseEvent(event);
+  }
+
+private:
+  QSerialPort serial;
+  Pkt pkt;
+  void write_pkt() {
+    serial.write((const char *)&pkt, sizeof(pkt));
+    if (serial.waitForBytesWritten(write_wait_msec)) {
+      qDebug() << "Data written successfully.";
+    } else {
+      qDebug() << "Error writing data:" << serial.errorString();
+    }
+  }
+
+  bool ctrl_left = false;
+  bool shift_left = false;
+  bool alt_left = false;
+  bool win_left = false;
+  bool ctrl_right = false;
+  bool shift_right = false;
+  bool alt_right = false;
+  bool win_right = false;
 };
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
-
-  // QGuiApplication app(argc, argv);
-  MyWindow window;
-  return app.exec();
-  // return 0;
 
   const auto ports = QSerialPortInfo::availablePorts();
   qDebug() << "Available serial ports:";
@@ -139,41 +237,10 @@ int main(int argc, char *argv[]) {
     qDebug() << "No USB serial port found";
     return 1;
   }
-
   auto &usb_port = usb_ports[0];
+  key_to_scancode_init();
+  MainWindow window(usb_port.portName());
+  return app.exec();
 
-  QSerialPort serial;
-  serial.setPortName(
-      usb_port.portName()); // Adjust the port name as needed (e.g.,
-                            // "/dev/cu.wchusbserialXXXX" on macOS)
-  serial.setBaudRate(QSerialPort::Baud9600);
-  serial.setDataBits(QSerialPort::Data8);
-  serial.setParity(QSerialPort::NoParity);
-  serial.setStopBits(QSerialPort::OneStop);
-  serial.setFlowControl(QSerialPort::NoFlowControl);
-  if (!serial.open(QIODevice::ReadWrite)) {
-    qDebug() << "Failed to open port:" << serial.errorString();
-    return 1;
-  }
-
-  Pkt pkt;
-  pkt.make_key_down(0x14);
-
-  serial.write((const char *)&pkt, sizeof(pkt));
-  if (serial.waitForBytesWritten(write_wait_msec)) {
-    qDebug() << "Data written successfully.";
-  } else {
-    qDebug() << "Error writing data:" << serial.errorString();
-  }
-
-  pkt.make_key_down(0x0);
-
-  serial.write((const char *)&pkt, sizeof(pkt));
-  if (serial.waitForBytesWritten(write_wait_msec)) {
-    qDebug() << "Data written successfully.";
-  } else {
-    qDebug() << "Error writing data:" << serial.errorString();
-  }
-  serial.close();
   return 0;
 }
