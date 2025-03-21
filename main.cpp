@@ -6,6 +6,8 @@
 #include <QMainWindow>
 #include <QMap>
 #include <QMediaCaptureSession>
+#include <QMediaDevices>
+#include <QPermission>
 #include <QPixmap>
 #include <QSerialPort>
 #include <QSerialPortInfo>
@@ -13,6 +15,7 @@
 #include <QVideoSink>
 #include <QWidget>
 #include <QWindow>
+#include <QtMultimediaWidgets/QVideoWidget>
 #include <cstdint>
 #include <exception>
 
@@ -96,26 +99,18 @@ struct Pkt {
 uint8_t key_to_scancode(uint32_t key);
 void key_to_scancode_init();
 
-class MainWindow : public QWindow {
+class MainWidget : public QVideoWidget {
 public:
-  MainWindow(QString port_name) {
+  MainWidget(QString port_name) {
 
-    serial.setPortName(port_name);
-    serial.setBaudRate(QSerialPort::Baud9600);
-    serial.setDataBits(QSerialPort::Data8);
-    serial.setParity(QSerialPort::NoParity);
-    serial.setStopBits(QSerialPort::OneStop);
-    serial.setFlowControl(QSerialPort::NoFlowControl);
-    if (!serial.open(QIODevice::ReadWrite)) {
-      qDebug() << "Failed to open port:" << serial.errorString();
-      throw std::exception();
-    }
-    setTitle("qKVM");
-    resize(400, 300);
-    show();
+    // setMinimumWidth(640);
+    // setMinimumHeight(480);
+    // resize(640, 480);
+    init_perm();
+    init_serial(port_name);
   }
 
-  virtual ~MainWindow() { serial.close(); }
+  virtual ~MainWidget() { serial.close(); }
 
 protected:
   void keyPressEvent(QKeyEvent *event) override {
@@ -156,7 +151,7 @@ protected:
       break;
     }
 
-    QWindow::keyPressEvent(event);
+    QVideoWidget::keyPressEvent(event);
   }
 
   void keyReleaseEvent(QKeyEvent *event) override {
@@ -188,7 +183,7 @@ protected:
       win_right = false;
       break;
     }
-    QWindow::keyReleaseEvent(event);
+    QVideoWidget::keyReleaseEvent(event);
   }
 
 private:
@@ -211,6 +206,61 @@ private:
   bool shift_right = false;
   bool alt_right = false;
   bool win_right = false;
+
+  QScopedPointer<QCamera> m_camera;
+  QMediaCaptureSession m_captureSession;
+
+  QWidget *container;
+  QVBoxLayout *layout;
+  QVideoWidget *viewfinder;
+
+  void init_serial(QString port_name) {
+    serial.setPortName(port_name);
+    serial.setBaudRate(QSerialPort::Baud9600);
+    serial.setDataBits(QSerialPort::Data8);
+    serial.setParity(QSerialPort::NoParity);
+    serial.setStopBits(QSerialPort::OneStop);
+    serial.setFlowControl(QSerialPort::NoFlowControl);
+    if (!serial.open(QIODevice::ReadWrite)) {
+      qDebug() << "Failed to open port:" << serial.errorString();
+      throw std::exception();
+    }
+  }
+
+  void init_cam() {
+
+    auto cam = QMediaDevices::defaultVideoInput();
+    m_camera.reset(new QCamera(cam));
+    m_captureSession.setCamera(m_camera.data());
+
+    // viewfinder = new QVideoWidget(container);
+    m_captureSession.setVideoOutput(this);
+
+    // layout = new QVBoxLayout(container);
+    // layout->setContentsMargins(0, 0, 0, 0); // Remove margins
+    // layout->setSpacing(0);                  // Remove spacing
+    // layout->addWidget(viewfinder);
+
+    // container->show();
+
+    m_camera->start();
+    qDebug() << "connect cam";
+    // Connect to the videoFrameChanged signal to update the video label
+  }
+
+  void init_perm() {
+    QCameraPermission cameraPermission;
+    switch (qApp->checkPermission(cameraPermission)) {
+    case Qt::PermissionStatus::Undetermined:
+      qApp->requestPermission(cameraPermission, this, &MainWidget::init_cam);
+      return;
+    case Qt::PermissionStatus::Denied:
+      qWarning("Camera permission is not granted!");
+      return;
+    case Qt::PermissionStatus::Granted:
+      break;
+    }
+  }
 };
 
 int main(int argc, char *argv[]) {
@@ -239,8 +289,8 @@ int main(int argc, char *argv[]) {
   }
   auto &usb_port = usb_ports[0];
   key_to_scancode_init();
-  MainWindow window(usb_port.portName());
+  MainWidget main_widget(usb_port.portName());
+  main_widget.resize(640, 480);
+  main_widget.show();
   return app.exec();
-
-  return 0;
 }
